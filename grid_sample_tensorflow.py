@@ -41,7 +41,7 @@ def grid_sample_tf(image, grid, align_corners=False, padding='border'):
     grid_H = grid.shape[1]
     grid_W = grid.shape[2]
 
-    output_tensor = np.zeros_like(image)
+    output_tensor = np.zeros(shape=np.shape(image))
     for n in range(N):
         for w in range(grid_W):
             for h in range(grid_H):
