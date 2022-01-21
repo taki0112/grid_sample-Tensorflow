@@ -4,7 +4,7 @@ import numpy as np
 import torch.nn.functional as F
 
 
-def grid_sample_tf(image, grid, align_corners=False, padding='border'):
+def grid_sample_np(image, grid, align_corners=False, padding='border'):
     def grid_sampler_unnormalize(coord, side, align_corners, padding='border'):
         if align_corners:
             x = ((coord + 1) / 2) * (side - 1)
@@ -84,6 +84,110 @@ def grid_sample_tf(image, grid, align_corners=False, padding='border'):
 
                     output_tensor[n, c, h, w] = out_ch_val
     return output_tensor
+
+def grid_sample_tf(img, coords, align_corners=False, padding='border'):
+    """
+
+    :param img: [B, C, H, W]
+    :param coords: [B, H, W, C]
+    :return: [B, C, H, W]
+    """
+    def get_pixel_value(img, x, y):
+        """
+        Utility function to get pixel value for coordinate
+        vectors x and y from a  4D tensor image.
+        Input
+        -----
+        - img: tensor of shape (B, H, W, C)
+        - x: flattened tensor of shape (B*H*W,)
+        - y: flattened tensor of shape (B*H*W,)
+        Returns
+        -------
+        - output: tensor of shape (B, H, W, C)
+        """
+        shape = tf.shape(x)
+        batch_size = shape[0]
+        height = shape[1]
+        width = shape[2]
+
+        batch_idx = tf.range(0, batch_size)
+        batch_idx = tf.reshape(batch_idx, (batch_size, 1, 1))
+        b = tf.tile(batch_idx, (1, height, width))
+
+        indices = tf.stack([b, y, x], 3)
+
+        return tf.gather_nd(img, indices)
+
+    # rescale x and y to [0, W-1/H-1]
+    img = tf.transpose(img, perm=[0, 2, 3, 1]) # -> [N, H, W, C]
+    # coords = tf.transpose(coords, perm=[0, 2, 3, 1]) # -> [N, H, W, C]
+
+    x, y = coords[:, ..., 0], coords[:, ..., 1]
+    x = tf.cast(x, 'float32')
+    y = tf.cast(y, 'float32')
+
+    side = tf.cast(tf.shape(img)[1], tf.int32)
+    side_f = tf.cast(side, tf.float32)
+
+    if align_corners:
+        x = ((x + 1) / 2) * (side_f - 1)
+        y = ((y + 1) / 2) * (side_f - 1)
+    else:
+        x = 0.5 * ((x + 1.0) * side_f - 1)
+        y = 0.5 * ((y + 1.0) * side_f - 1)
+
+    if padding == 'border':
+        x = tf.clip_by_value(x, 0, side_f - 1)
+        y = tf.clip_by_value(y, 0, side_f - 1)
+
+    # -------------- Changes above --------------------
+    # grab 4 nearest corner points for each (x_i, y_i)
+    x0 = tf.floor(x)
+    x1 = x0 + 1
+    y0 = tf.floor(y)
+    y1 = y0 + 1
+
+    # recast as float for delta calculation
+    x0 = tf.cast(x0, 'float32')
+    x1 = tf.cast(x1, 'float32')
+    y0 = tf.cast(y0, 'float32')
+    y1 = tf.cast(y1, 'float32')
+
+    # calculate deltas
+    wa = (x1 - x) * (y1 - y)
+    wb = (x1 - x) * (y - y0)
+    wc = (x - x0) * (y1 - y)
+    wd = (x - x0) * (y - y0)
+
+    # recast as int for img boundaries
+    x0 = tf.cast(x0, 'int32')
+    x1 = tf.cast(x1, 'int32')
+    y0 = tf.cast(y0, 'int32')
+    y1 = tf.cast(y1, 'int32')
+
+    # clip to range [0, H-1/W-1] to not violate img boundaries
+    x0 = tf.clip_by_value(x0, 0, side-1)
+    x1 = tf.clip_by_value(x1, 0, side-1)
+    y0 = tf.clip_by_value(y0, 0, side-1)
+    y1 = tf.clip_by_value(y1, 0, side-1)
+
+    # get pixel value at corner coords
+    Ia = get_pixel_value(img, x0, y0)
+    Ib = get_pixel_value(img, x0, y1)
+    Ic = get_pixel_value(img, x1, y0)
+    Id = get_pixel_value(img, x1, y1)
+
+    # add dimension for addition
+    wa = tf.expand_dims(wa, axis=3)
+    wb = tf.expand_dims(wb, axis=3)
+    wc = tf.expand_dims(wc, axis=3)
+    wd = tf.expand_dims(wd, axis=3)
+
+    # compute output
+    out = wa * Ia + wb * Ib + wc * Ic + wd * Id # [N, H, W, C]
+    out = tf.transpose(out, perm=[0, 3, 1, 2])
+
+    return out
 
 # h = 4
 # w = 4
